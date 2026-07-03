@@ -1,6 +1,7 @@
 #include "allocator.h"
 #include <unistd.h>
 #include <stddef.h>
+#include <stdio.h>
 
 #define BLOCK_META_SIZE sizeof(block_meta)
 
@@ -20,23 +21,35 @@ block_meta *get_footer(block_meta *block) {
     return (block_meta *)((char *)block + block->size - BLOCK_META_SIZE);
 }
 
-// Scan the implicit free list to find a free block
+// This now does BEST-FIT instead of first-fit
 block_meta *find_free_block(size_t size) {
     if (heap_end == NULL) {
         return NULL;
     }
 
     block_meta *curr = head;
+    block_meta *best = NULL;
+    size_t smallest_diff = ~0; // largest possible size_t value
+
     while (curr != NULL && (char *)curr < (char *)heap_end) {
         if (curr->is_free == 1 && curr->size >= size) {
-            return curr;
+            // Check if this is the smallest fit so far
+            if (curr->size - size < smallest_diff) {
+                smallest_diff = curr->size - size;
+                best = curr;
+                // If we find an exact match, we can stop searching
+                if (smallest_diff == 0) {
+                    break;
+                }
+            }
         }
+        // Move to the next block
         curr = (block_meta *)((char *)curr + curr->size);
     }
-    return NULL;
+    return best;
 }
 
-// Ask the OS for more memory using sbrk
+// Ask the OS for more memory
 block_meta *request_memory(size_t size) {
     void *old_brk = sbrk(0);
     block_meta *new_block = sbrk(size);
@@ -106,10 +119,10 @@ void *my_malloc(size_t size) {
         footer->is_free = 0;
     }
 
-    // Return pointer to the data area 
     return (void *)((char *)block + BLOCK_META_SIZE);
 }
 
+// COALESCING
 void my_free(void *ptr) {
     if (ptr == NULL) {
         return;
@@ -117,8 +130,40 @@ void my_free(void *ptr) {
 
     block_meta *block = get_header(ptr);
 
-    // Simply mark the block as free
+    // Mark the block as free
     block->is_free = 1;
     block_meta *footer = get_footer(block);
     footer->is_free = 1;
+
+    // Now we coalesce: merge with the next block if it is free
+    block_meta *next_block = (block_meta *)((char *)block + block->size);
+    if ((char *)next_block < (char *)heap_end && next_block->is_free == 1) {
+        // Merge current block with next block
+        size_t new_size = block->size + next_block->size;
+        block->size = new_size;
+        footer = get_footer(block);
+        footer->size = new_size;
+        footer->is_free = 1;
+    }
+
+    block_meta *curr = head;
+    block_meta *prev_block = NULL;
+
+    while (curr != NULL && (char *)curr < (char *)heap_end) {
+        if ((char *)((char *)curr + curr->size) == (char *)block) {
+            prev_block = curr;
+            break;
+        }
+        curr = (block_meta *)((char *)curr + curr->size);
+    }
+
+    if (prev_block != NULL && prev_block->is_free == 1) {
+        // Merge prev block with current block (which is now free)
+        size_t new_size = prev_block->size + block->size;
+        prev_block->size = new_size;
+        footer = get_footer(prev_block);
+        footer->size = new_size;
+        footer->is_free = 1;
+        // Block is now absorbed into prev_block
+    }
 }
