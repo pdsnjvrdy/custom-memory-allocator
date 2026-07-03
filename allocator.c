@@ -1,26 +1,124 @@
 #include "allocator.h"
-#include <unistd.h>   
-#include <stddef.h>   
+#include <unistd.h>
+#include <stddef.h>
 
-// This will point to the first block in our heap
+#define BLOCK_META_SIZE sizeof(block_meta)
+
 block_meta *head = NULL;
+void *heap_end = NULL;
 
-// Simple function to round up size to the nearest multiple of 8
+// Round up to nearest multiple of 8
 size_t align_size(size_t size) {
     return (size + 7) & ~7;
 }
 
-// When user gives us a pointer from my_malloc, we need to go back
-// a few bytes to get the block_meta header
 block_meta *get_header(void *ptr) {
-    return (block_meta *)((char *)ptr - sizeof(block_meta));
+    return (block_meta *)((char *)ptr - BLOCK_META_SIZE);
 }
 
-void *my_malloc(size_t size) {
-    (void)size;  // just to stop the compiler from giving warnings
+block_meta *get_footer(block_meta *block) {
+    return (block_meta *)((char *)block + block->size - BLOCK_META_SIZE);
+}
+
+// Scan the implicit free list to find a free block
+block_meta *find_free_block(size_t size) {
+    if (heap_end == NULL) {
+        return NULL;
+    }
+
+    block_meta *curr = head;
+    while (curr != NULL && (char *)curr < (char *)heap_end) {
+        if (curr->is_free == 1 && curr->size >= size) {
+            return curr;
+        }
+        curr = (block_meta *)((char *)curr + curr->size);
+    }
     return NULL;
 }
 
+// Ask the OS for more memory using sbrk
+block_meta *request_memory(size_t size) {
+    void *old_brk = sbrk(0);
+    block_meta *new_block = sbrk(size);
+
+    if ((void *)new_block == (void *)-1) {
+        return NULL; // sbrk failed
+    }
+
+    heap_end = (char *)old_brk + size;
+
+    new_block->size = size;
+    new_block->is_free = 1;
+
+    block_meta *footer = get_footer(new_block);
+    footer->size = size;
+    footer->is_free = 1;
+
+    return new_block;
+}
+
+void *my_malloc(size_t size) {
+    size = align_size(size);
+    if (size == 0) {
+        return NULL;
+    }
+
+    // Total block size = user data + header + footer
+    size_t total_block_size = size + (2 * BLOCK_META_SIZE);
+    total_block_size = align_size(total_block_size);
+
+    // Try to find a free block
+    block_meta *block = find_free_block(total_block_size);
+
+    // If no free block found, request new memory from OS
+    if (block == NULL) {
+        block = request_memory(total_block_size);
+        if (block == NULL) {
+            return NULL;
+        }
+        // If this is the first block, set the head
+        if (head == NULL) {
+            head = block;
+        }
+    }
+
+    // Mark the block as allocated
+    block->is_free = 0;
+    block_meta *footer = get_footer(block);
+    footer->is_free = 0;
+
+    // We need at least header+footer+8 bytes for the new block, so ...
+    if (block->size >= total_block_size + BLOCK_META_SIZE + 8) {
+        block_meta *new_free = (block_meta *)((char *)block + total_block_size);
+        size_t remaining = block->size - total_block_size;
+
+        new_free->size = remaining;
+        new_free->is_free = 1;
+
+        block_meta *new_free_footer = get_footer(new_free);
+        new_free_footer->size = remaining;
+        new_free_footer->is_free = 1;
+
+        // Shrink the current block
+        block->size = total_block_size;
+        footer = get_footer(block);
+        footer->size = total_block_size;
+        footer->is_free = 0;
+    }
+
+    // Return pointer to the data area 
+    return (void *)((char *)block + BLOCK_META_SIZE);
+}
+
 void my_free(void *ptr) {
-    (void)ptr;   // just to stop the compiler from giving warnings
+    if (ptr == NULL) {
+        return;
+    }
+
+    block_meta *block = get_header(ptr);
+
+    // Simply mark the block as free
+    block->is_free = 1;
+    block_meta *footer = get_footer(block);
+    footer->is_free = 1;
 }
