@@ -26,6 +26,8 @@ gcc -Wall -o test test.c allocator.c
 ./test
 ```
 
+This project was developed and tested on Ubuntu running under WSL2, but it should also build on Linux systems with a C compiler such as gcc.
+
 ---
 
 ## How It Works
